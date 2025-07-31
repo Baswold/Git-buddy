@@ -66,12 +66,18 @@ class GitBuddy:
             directory = self.current_dir
             
         files = []
+        ignore_patterns = ['.git', '__pycache__', '.pyc', '.DS_Store', '.egg-info', 'node_modules', '.vscode', '.idea']
+        
         for item in directory.rglob('*'):
             if item.is_file():
                 # Skip hidden files, git files, and common ignore patterns
-                if not any(part.startswith('.') for part in item.parts):
-                    if not any(ignore in str(item) for ignore in ['.git', '__pycache__', '.pyc', '.DS_Store']):
-                        files.append(item)
+                relative_path = str(item.relative_to(directory))
+                should_skip = (
+                    any(part.startswith('.') for part in item.parts) or
+                    any(ignore in relative_path for ignore in ignore_patterns)
+                )
+                if not should_skip:
+                    files.append(item)
         return sorted(files)
     
     def display_file_selection(self, files: List[Path]) -> List[Path]:
@@ -201,6 +207,21 @@ class GitBuddy:
         """Commit changes with the provided message"""
         self.console.print("[yellow]Committing changes...[/yellow]")
         
+        # First check if there are any changes to commit
+        success, status_output = self.run_git_command(['git', 'status', '--porcelain'])
+        if success and not status_output.strip():
+            self.console.print("[yellow]No changes to commit[/yellow]")
+            return True
+            
+        # Check for untracked files and add them
+        success, status_output = self.run_git_command(['git', 'status', '--porcelain'])
+        if success and status_output:
+            untracked_files = [line[3:] for line in status_output.split('\n') if line.startswith('??')]
+            if untracked_files:
+                self.console.print(f"[yellow]Found {len(untracked_files)} untracked files, adding them...[/yellow]")
+                for file in untracked_files:
+                    self.run_git_command(['git', 'add', file])
+        
         success, output = self.run_git_command(['git', 'commit', '-m', commit_message])
         
         if success:
@@ -210,6 +231,11 @@ class GitBuddy:
             if "nothing to commit" in output.lower():
                 self.console.print("[yellow]No changes to commit[/yellow]")
                 return True
+            elif "Please tell me who you are" in output:
+                self.console.print("[red]✗[/red] Git user not configured. Please run:")
+                self.console.print("  git config --global user.email 'you@example.com'")
+                self.console.print("  git config --global user.name 'Your Name'")
+                return False
             else:
                 self.console.print(f"[red]✗[/red] Failed to commit: {output}")
                 return False
@@ -238,9 +264,40 @@ class GitBuddy:
             self.console.print(f"[red]✗[/red] Failed to configure remote: {output}")
             return False
     
+    def get_current_branch(self) -> str:
+        """Get the current git branch name"""
+        success, output = self.run_git_command(['git', 'branch', '--show-current'])
+        if success and output.strip():
+            return output.strip()
+        
+        # Fallback: try to get branch from git status
+        success, output = self.run_git_command(['git', 'status', '--porcelain', '-b'])
+        if success and output:
+            first_line = output.split('\n')[0]
+            if '##' in first_line:
+                branch_info = first_line.replace('## ', '')
+                if '...' in branch_info:
+                    return branch_info.split('...')[0]
+                return branch_info
+        
+        return "main"  # Default fallback
+
     def handle_push_conflicts(self, branch: str = "main") -> bool:
         """Handle push conflicts by trying different strategies"""
         self.console.print("[yellow]Attempting to resolve push conflicts...[/yellow]")
+        
+        # First, let's see what branch we're actually on
+        current_branch = self.get_current_branch()
+        if current_branch != branch:
+            self.console.print(f"[yellow]Current branch is '{current_branch}', but trying to push to '{branch}'[/yellow]")
+            
+            # Try to checkout the target branch or create it
+            success, output = self.run_git_command(['git', 'checkout', '-B', branch])
+            if success:
+                self.console.print(f"[green]✓[/green] Switched to branch '{branch}'")
+            else:
+                self.console.print(f"[yellow]Using current branch '{current_branch}' instead[/yellow]")
+                branch = current_branch
         
         # Try to pull and merge
         self.console.print("[yellow]Trying to pull and merge remote changes...[/yellow]")
@@ -253,6 +310,14 @@ class GitBuddy:
             if success:
                 self.console.print("[green]✓[/green] Successfully pushed after merge!")
                 return True
+        else:
+            # If pull failed due to no tracking branch, set upstream and try again
+            if "no tracking information" in output.lower() or "couldn't find remote ref" in output.lower():
+                self.console.print("[yellow]No remote branch found, creating new remote branch...[/yellow]")
+                success, output = self.run_git_command(['git', 'push', '-u', 'origin', branch])
+                if success:
+                    self.console.print("[green]✓[/green] Successfully pushed new branch!")
+                    return True
         
         # If pull failed, try force push with lease (safer than regular force push)
         self.console.print("[yellow]Trying force push with lease (safe overwrite)...[/yellow]")
@@ -261,12 +326,24 @@ class GitBuddy:
             if success:
                 self.console.print("[green]✓[/green] Successfully force pushed!")
                 return True
+            else:
+                # Try regular force push as last resort
+                self.console.print("[yellow]Force with lease failed, trying regular force push...[/yellow]")
+                if Confirm.ask("[bold red]This is more dangerous. Really continue?[/bold red]"):
+                    success, output = self.run_git_command(['git', 'push', '--force', 'origin', branch])
+                    if success:
+                        self.console.print("[green]✓[/green] Successfully force pushed!")
+                        return True
         
         self.console.print(f"[red]✗[/red] Could not resolve push conflicts: {output}")
         return False
 
-    def push_to_github(self, branch: str = "main") -> bool:
+    def push_to_github(self, branch: str = None) -> bool:
         """Push changes to GitHub"""
+        # Auto-detect current branch if not specified
+        if branch is None:
+            branch = self.get_current_branch()
+            
         self.console.print(f"[yellow]Pushing to GitHub ({branch} branch)...[/yellow]")
         
         with Progress(
@@ -282,24 +359,37 @@ class GitBuddy:
             self.console.print("[green]✓[/green] Successfully pushed to GitHub!")
             return True
         else:
-            # Handle common push errors
-            if "remote: Repository not found" in output:
+            # Handle common push errors with more detail
+            if "remote: Repository not found" in output or "repository does not exist" in output.lower():
                 self.console.print("[red]✗[/red] Repository not found. Make sure:")
                 self.console.print("  1. The repository exists on GitHub")
                 self.console.print("  2. You have access to the repository")
                 self.console.print("  3. Your GitHub credentials are configured")
+                self.console.print("  4. The repository URL is correct")
                 return False
-            elif "Permission denied" in output or "Authentication failed" in output:
+            elif "Permission denied" in output or "Authentication failed" in output or "access denied" in output.lower():
                 self.console.print("[red]✗[/red] Permission denied. Please check your GitHub authentication:")
                 self.console.print("  1. Generate a personal access token at: https://github.com/settings/tokens")
-                self.console.print("  2. Use token as password when prompted")
+                self.console.print("  2. Use your GitHub username and token as password when prompted")
                 self.console.print("  3. Or configure SSH keys for passwordless access")
+                self.console.print("  4. Make sure you have write access to the repository")
                 return False
-            elif "failed to push some refs" in output or "non-fast-forward" in output or "Updates were rejected" in output:
+            elif "support for password authentication was removed" in output.lower():
+                self.console.print("[red]✗[/red] Password authentication is no longer supported. You need:")
+                self.console.print("  1. A personal access token instead of your password")
+                self.console.print("  2. Go to: https://github.com/settings/tokens")
+                self.console.print("  3. Generate a token with 'repo' permissions")
+                self.console.print("  4. Use token as password when Git asks for credentials")
+                return False
+            elif "failed to push some refs" in output or "non-fast-forward" in output or "Updates were rejected" in output or "rejected" in output.lower():
                 # Try to handle push conflicts
                 return self.handle_push_conflicts(branch)
+            elif "couldn't find remote ref" in output.lower():
+                self.console.print(f"[yellow]Remote branch '{branch}' doesn't exist, creating it...[/yellow]")
+                return self.handle_push_conflicts(branch)
             else:
-                self.console.print(f"[red]✗[/red] Push failed: {output}")
+                self.console.print(f"[red]✗[/red] Push failed with error:")
+                self.console.print(f"[red]{output}[/red]")
                 # Ask if user wants to try conflict resolution anyway
                 if Confirm.ask("Try to resolve this as a push conflict?"):
                     return self.handle_push_conflicts(branch)
