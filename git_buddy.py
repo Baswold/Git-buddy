@@ -60,6 +60,38 @@ class GitBuddy:
                 
         return False, "Invalid GitHub URL format. Use: https://github.com/owner/repo or owner/repo"
     
+    def get_git_status(self) -> Tuple[List[str], List[str], List[str]]:
+        """Get git status and return lists of modified, new, and deleted files"""
+        success, output = self.run_git_command(['git', 'status', '--porcelain'])
+        
+        modified_files = []
+        new_files = []
+        deleted_files = []
+        
+        if success and output:
+            for line in output.strip().split('\n'):
+                if len(line) < 3:
+                    continue
+                    
+                status_code = line[:2]
+                file_path = line[3:]
+                
+                if status_code.strip() in ['M', 'MM', 'AM']:
+                    modified_files.append(file_path)
+                elif status_code.strip() in ['A', '??', 'AM']:
+                    new_files.append(file_path)
+                elif status_code.strip() in ['D', 'AD', 'MD']:
+                    deleted_files.append(file_path)
+                elif status_code[0] in ['M', 'A', '?'] and status_code[1] in ['M', 'A', '?']:
+                    # Handle staged and unstaged changes
+                    if file_path not in modified_files and file_path not in new_files:
+                        if status_code[0] == '?' or status_code[1] == '?':
+                            new_files.append(file_path)
+                        else:
+                            modified_files.append(file_path)
+        
+        return modified_files, new_files, deleted_files
+
     def get_files_in_directory(self, directory: Path = None) -> List[Path]:
         """Get all files in the current directory (excluding git and hidden files)"""
         if directory is None:
@@ -80,18 +112,151 @@ class GitBuddy:
                     files.append(item)
         return sorted(files)
     
+    def get_changed_files_as_paths(self) -> List[Path]:
+        """Get only changed/new files as Path objects"""
+        modified_files, new_files, deleted_files = self.get_git_status()
+        all_changed = modified_files + new_files
+        
+        changed_paths = []
+        for file_path in all_changed:
+            full_path = self.current_dir / file_path
+            if full_path.exists():
+                changed_paths.append(full_path)
+        
+        return sorted(changed_paths)
+    
+    def show_file_diff(self, file_path: str):
+        """Show diff for a specific file"""
+        self.console.print(f"\n[bold]Diff for {file_path}:[/bold]")
+        
+        # Check if file is new (untracked)
+        success, status_output = self.run_git_command(['git', 'status', '--porcelain', file_path])
+        if success and status_output.startswith('??'):
+            self.console.print("[green]This is a new file (showing first 20 lines):[/green]")
+            try:
+                with open(self.current_dir / file_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()[:20]
+                    for i, line in enumerate(lines, 1):
+                        self.console.print(f"[green]+{i:3d}[/green] {line.rstrip()}")
+                    if len(lines) == 20:
+                        self.console.print("[dim]... (truncated)[/dim]")
+            except Exception as e:
+                self.console.print(f"[red]Could not read file: {e}[/red]")
+        else:
+            # Show actual diff for modified files
+            success, diff_output = self.run_git_command(['git', 'diff', 'HEAD', '--', file_path])
+            if success and diff_output.strip():
+                # Parse and colorize diff output
+                lines = diff_output.split('\n')
+                for line in lines:
+                    if line.startswith('+++') or line.startswith('---'):
+                        self.console.print(f"[bold]{line}[/bold]")
+                    elif line.startswith('+'):
+                        self.console.print(f"[green]{line}[/green]")
+                    elif line.startswith('-'):
+                        self.console.print(f"[red]{line}[/red]")
+                    elif line.startswith('@@'):
+                        self.console.print(f"[cyan]{line}[/cyan]")
+                    else:
+                        self.console.print(line)
+            else:
+                self.console.print("[yellow]No differences found or file is staged[/yellow]")
+
+    def display_git_status(self):
+        """Display current git status with colors"""
+        modified_files, new_files, deleted_files = self.get_git_status()
+        
+        if not any([modified_files, new_files, deleted_files]):
+            self.console.print("[green]✓[/green] Working directory clean - no changes detected")
+            return
+        
+        self.console.print("\n[bold]Git Status:[/bold]")
+        
+        if new_files:
+            self.console.print(f"\n[bold green]New files ({len(new_files)}):[/bold green]")
+            for file in new_files:
+                self.console.print(f"  [green]+[/green] {file}")
+        
+        if modified_files:
+            self.console.print(f"\n[bold yellow]Modified files ({len(modified_files)}):[/bold yellow]")
+            for file in modified_files:
+                self.console.print(f"  [yellow]M[/yellow] {file}")
+        
+        if deleted_files:
+            self.console.print(f"\n[bold red]Deleted files ({len(deleted_files)}):[/bold red]")
+            for file in deleted_files:
+                self.console.print(f"  [red]-[/red] {file}")
+        
+        # Offer to show diffs
+        if modified_files or new_files:
+            if Confirm.ask("\n[bold]Would you like to see what changed in any files?[/bold]"):
+                all_changed = modified_files + new_files
+                for i, file in enumerate(all_changed, 1):
+                    self.console.print(f"\n[bold]{i}. {file}[/bold]")
+                
+                while True:
+                    choice = Prompt.ask(
+                        "Enter file number to view diff (or 'done' to continue)",
+                        default="done"
+                    )
+                    
+                    if choice.lower() == 'done':
+                        break
+                        
+                    try:
+                        file_index = int(choice) - 1
+                        if 0 <= file_index < len(all_changed):
+                            self.show_file_diff(all_changed[file_index])
+                        else:
+                            self.console.print("[red]Invalid file number[/red]")
+                    except ValueError:
+                        self.console.print("[red]Please enter a number or 'done'[/red]")
+
     def display_file_selection(self, files: List[Path]) -> List[Path]:
         """Display files and let user select which ones to push"""
         if not files:
             self.console.print("[red]No files found in the current directory[/red]")
             return []
+        
+        # Check if this is a git repository and show status
+        git_dir = self.current_dir / '.git'
+        if git_dir.exists():
+            self.display_git_status()
             
-        self.console.print("\n[bold]Files in current directory:[/bold]")
+            # Get changed files
+            changed_files = self.get_changed_files_as_paths()
+            
+            if changed_files:
+                self.console.print("\n[bold]File Selection Options:[/bold]")
+                choice = Prompt.ask(
+                    "What would you like to push?",
+                    choices=["changed", "all", "select", "quit"],
+                    default="changed"
+                )
+                
+                if choice == "quit":
+                    return []
+                elif choice == "changed":
+                    self.console.print(f"\n[green]Selected {len(changed_files)} changed file(s)[/green]")
+                    return changed_files
+                elif choice == "all":
+                    files = files
+                else:  # select
+                    return self.select_specific_files(files)
+            else:
+                self.console.print("\n[yellow]No changes detected, showing all files[/yellow]")
+        
+        self.console.print("\n[bold]All files in directory:[/bold]")
         
         table = Table(show_header=True, header_style="bold magenta")
         table.add_column("Index", style="dim", width=6)
         table.add_column("File Path", style="cyan")
         table.add_column("Size", style="green", width=10)
+        table.add_column("Status", style="yellow", width=8)
+        
+        # Get git status for file marking
+        modified_files, new_files, deleted_files = self.get_git_status()
+        all_changed = set(modified_files + new_files)
         
         for i, file_path in enumerate(files, 1):
             try:
@@ -99,7 +264,11 @@ class GitBuddy:
                 size_str = self.format_file_size(size)
             except:
                 size_str = "N/A"
-            table.add_row(str(i), str(file_path.relative_to(self.current_dir)), size_str)
+            
+            relative_path = str(file_path.relative_to(self.current_dir))
+            status = "NEW" if relative_path in new_files else "MODIFIED" if relative_path in modified_files else "UNCHANGED"
+            
+            table.add_row(str(i), relative_path, size_str, status)
             
         self.console.print(table)
         
@@ -421,7 +590,7 @@ class GitBuddy:
                 if not files:
                     continue
                 
-                # Let user select files
+                # Let user select files (this now includes smart change detection)
                 selected_files = self.display_file_selection(files)
                 if not selected_files:
                     continue
