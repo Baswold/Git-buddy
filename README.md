@@ -1,0 +1,99 @@
+# Git Buddy 🚀
+
+A terminal-based Git helper tool that makes pushing files to GitHub repositories easy and intuitive.
+
+## Features
+
+- 🖥️ **Terminal GUI** - Beautiful, interactive command-line interface
+- 📁 **Smart File Selection** - Choose all files or select specific ones
+- 🔗 **Flexible URL Support** - Accepts various GitHub URL formats
+- ⚡ **Intelligent Error Handling** - Clear error messages and suggestions
+- 🔐 **Authentication Guidance** - Helpful tips for GitHub authentication
+- 📊 **Progress Tracking** - Visual feedback during operations
+
+## Installation
+
+### Option 1: Global Installation (Recommended)
+Install Git Buddy globally so you can run it from anywhere with just `gitbuddy`:
+
+```bash
+# Navigate to the git_buddy directory
+cd /path/to/git_buddy
+
+# Install globally
+pip install -e .
+```
+
+Now you can run `gitbuddy` from any directory!
+
+### Option 2: Local Installation
+1. **Clone or download this repository**
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+## Usage
+
+### Global Installation
+Simply run from any project directory:
+```bash
+gitbuddy
+```
+
+### Local Installation
+1. **Navigate to your project directory:**
+   ```bash
+   cd /path/to/your/project
+   ```
+
+2. **Run Git Buddy:**
+   ```bash
+   python /path/to/git_buddy/git_buddy.py
+   ```
+
+3. **Follow the interactive prompts:**
+   - Enter your GitHub repository URL
+   - Select files to push (all or specific files)
+   - Enter a commit message
+   - Confirm and push!
+
+## Supported Repository URL Formats
+
+- `https://github.com/username/repository`
+- `https://github.com/username/repository.git`
+- `git@github.com:username/repository.git`
+- `username/repository`
+
+## GitHub Authentication
+
+For private repositories or first-time pushes, you'll need to authenticate:
+
+### Option 1: Personal Access Token (Recommended)
+1. Go to GitHub Settings → Developer settings → Personal access tokens
+2. Generate a new token with `repo` permissions
+3. Use your GitHub username and the token as your password when prompted
+
+### Option 2: SSH Key Authentication
+1. Generate an SSH key: `ssh-keygen -t ed25519 -C "your_email@example.com"`
+2. Add the public key to your GitHub account
+3. Use SSH URL format: `git@github.com:username/repository.git`
+
+## Error Handling
+
+Git Buddy includes smart error handling for common issues:
+
+- **Repository not found** - Checks repository existence and access permissions
+- **Permission denied** - Provides authentication guidance
+- **Push conflicts** - Suggests pulling changes first
+- **Invalid URLs** - Shows supported URL formats
+
+## Requirements
+
+- Python 3.6+
+- Git installed and configured
+- `rich` library for terminal UI
+
+## License
+
+MIT License - feel free to use and modify as needed!

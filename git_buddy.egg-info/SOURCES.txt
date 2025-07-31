@@ -1,0 +1,9 @@
+README.md
+git_buddy.py
+setup.py
+git_buddy.egg-info/PKG-INFO
+git_buddy.egg-info/SOURCES.txt
+git_buddy.egg-info/dependency_links.txt
+git_buddy.egg-info/entry_points.txt
+git_buddy.egg-info/requires.txt
+git_buddy.egg-info/top_level.txt
