@@ -238,6 +238,33 @@ class GitBuddy:
             self.console.print(f"[red]✗[/red] Failed to configure remote: {output}")
             return False
     
+    def handle_push_conflicts(self, branch: str = "main") -> bool:
+        """Handle push conflicts by trying different strategies"""
+        self.console.print("[yellow]Attempting to resolve push conflicts...[/yellow]")
+        
+        # Try to pull and merge
+        self.console.print("[yellow]Trying to pull and merge remote changes...[/yellow]")
+        success, output = self.run_git_command(['git', 'pull', 'origin', branch, '--allow-unrelated-histories'])
+        
+        if success:
+            self.console.print("[green]✓[/green] Successfully merged remote changes")
+            # Now try to push again
+            success, output = self.run_git_command(['git', 'push', '-u', 'origin', branch])
+            if success:
+                self.console.print("[green]✓[/green] Successfully pushed after merge!")
+                return True
+        
+        # If pull failed, try force push with lease (safer than regular force push)
+        self.console.print("[yellow]Trying force push with lease (safe overwrite)...[/yellow]")
+        if Confirm.ask("[bold red]This will overwrite remote repository. Continue?[/bold red]"):
+            success, output = self.run_git_command(['git', 'push', '--force-with-lease', 'origin', branch])
+            if success:
+                self.console.print("[green]✓[/green] Successfully force pushed!")
+                return True
+        
+        self.console.print(f"[red]✗[/red] Could not resolve push conflicts: {output}")
+        return False
+
     def push_to_github(self, branch: str = "main") -> bool:
         """Push changes to GitHub"""
         self.console.print(f"[yellow]Pushing to GitHub ({branch} branch)...[/yellow]")
@@ -261,18 +288,22 @@ class GitBuddy:
                 self.console.print("  1. The repository exists on GitHub")
                 self.console.print("  2. You have access to the repository")
                 self.console.print("  3. Your GitHub credentials are configured")
-            elif "Permission denied" in output:
+                return False
+            elif "Permission denied" in output or "Authentication failed" in output:
                 self.console.print("[red]✗[/red] Permission denied. Please check your GitHub authentication:")
                 self.console.print("  1. Generate a personal access token at: https://github.com/settings/tokens")
                 self.console.print("  2. Use token as password when prompted")
                 self.console.print("  3. Or configure SSH keys for passwordless access")
-            elif "failed to push some refs" in output:
-                self.console.print("[red]✗[/red] Push rejected. Try pulling first:")
-                self.console.print("  git pull origin main")
+                return False
+            elif "failed to push some refs" in output or "non-fast-forward" in output or "Updates were rejected" in output:
+                # Try to handle push conflicts
+                return self.handle_push_conflicts(branch)
             else:
                 self.console.print(f"[red]✗[/red] Push failed: {output}")
-            
-            return False
+                # Ask if user wants to try conflict resolution anyway
+                if Confirm.ask("Try to resolve this as a push conflict?"):
+                    return self.handle_push_conflicts(branch)
+                return False
     
     def run(self):
         """Main application loop"""
