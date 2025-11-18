@@ -35,6 +35,7 @@ class GitBuddy:
         self.config_file = Path.home() / '.gitbuddy_config.json'
         self.config = self.load_config()
         self.operation_start_time = None
+        self.dry_run_mode = False
         
     def load_config(self) -> Dict:
         """Load configuration from file"""
@@ -89,6 +90,19 @@ class GitBuddy:
 • .gitignore suggestions
 • Retry logic for network failures
 • Detailed operation statistics
+• Dry-run mode for safe previews
+• Configuration management
+
+[bold]Commands:[/bold]
+• [cyan]help[/cyan] or [cyan]?[/cyan] - Show this help message
+• [cyan]config[/cyan] - View/edit configuration
+• [cyan]stats[/cyan] - Show repository statistics
+• [cyan]history[/cyan] - View commit history
+• [cyan]stash[/cyan] - Stash management (save/apply/pop)
+• [cyan]diff[/cyan] - Show detailed diff with stats
+• [cyan]quick[/cyan] - Quick commit & push workflow
+• [cyan]cleanup[/cyan] - Repository cleanup utilities
+• [cyan]quit[/cyan], [cyan]q[/cyan], or [cyan]exit[/cyan] - Exit the application
 
 [bold]Tips:[/bold]
 • Use numbers to quickly select recent repositories
@@ -96,6 +110,7 @@ class GitBuddy:
 • The tool warns you about potentially sensitive files before pushing
 • Network failures are automatically retried with exponential backoff
 • Configuration is saved in ~/.gitbuddy_config.json
+• Enable dry-run mode to preview changes without pushing
 
 [bold]URL Formats Supported:[/bold]
 • https://github.com/username/repo
@@ -103,11 +118,152 @@ class GitBuddy:
 • username/repo
 
 [bold]Keyboard Shortcuts:[/bold]
-• Type 'quit' or 'q' to exit
-• Type 'help' or '?' for this help message
 • Ctrl+C to cancel at any time
 """
         self.console.print(Panel(help_text, title="Help", border_style="cyan"))
+
+    def manage_config(self):
+        """Interactive configuration management"""
+        self.console.print("\n[bold cyan]⚙️ Configuration Management[/bold cyan]")
+
+        # Display current config
+        config_table = Table(show_header=True, header_style="bold magenta")
+        config_table.add_column("Setting", style="cyan")
+        config_table.add_column("Value", style="green")
+        config_table.add_column("Description", style="dim")
+
+        config_table.add_row(
+            "file_size_warning_mb",
+            str(self.config.get("file_size_warning_mb", 10)),
+            "Warning threshold for large files (MB)"
+        )
+        config_table.add_row(
+            "show_stats",
+            str(self.config.get("show_stats", True)),
+            "Show statistics after operations"
+        )
+        config_table.add_row(
+            "default_branch",
+            self.config.get("default_branch", "main"),
+            "Default branch name"
+        )
+        config_table.add_row(
+            "recent_repos",
+            f"{len(self.config.get('recent_repos', []))} repos",
+            "Number of recent repositories saved"
+        )
+
+        self.console.print(config_table)
+
+        if Confirm.ask("\n[bold]Would you like to modify settings?[/bold]", default=False):
+            # File size warning threshold
+            new_size = Prompt.ask(
+                "File size warning threshold (MB)",
+                default=str(self.config.get("file_size_warning_mb", 10))
+            )
+            try:
+                self.config["file_size_warning_mb"] = int(new_size)
+            except ValueError:
+                self.console.print("[yellow]Invalid number, keeping current value[/yellow]")
+
+            # Show stats
+            self.config["show_stats"] = Confirm.ask(
+                "Show statistics after operations?",
+                default=self.config.get("show_stats", True)
+            )
+
+            # Default branch
+            self.config["default_branch"] = Prompt.ask(
+                "Default branch name",
+                default=self.config.get("default_branch", "main")
+            )
+
+            # Clear recent repos option
+            if self.config.get("recent_repos") and Confirm.ask("Clear recent repositories list?", default=False):
+                self.config["recent_repos"] = []
+
+            self.save_config()
+            self.console.print("[green]✓[/green] Configuration saved!")
+
+    def filter_files_by_pattern(self, files: List[Path], pattern: str = None) -> List[Path]:
+        """Filter files by extension or pattern"""
+        if not pattern:
+            return files
+
+        filtered = []
+        for file in files:
+            if pattern.startswith('.'):
+                # Extension filter
+                if file.suffix.lower() == pattern.lower():
+                    filtered.append(file)
+            else:
+                # Glob pattern filter
+                if file.match(pattern):
+                    filtered.append(file)
+
+        return filtered
+
+    def create_tag(self, tag_name: str, message: str = None):
+        """Create a git tag"""
+        if message:
+            success, output = self.run_git_command(['git', 'tag', '-a', tag_name, '-m', message])
+        else:
+            success, output = self.run_git_command(['git', 'tag', tag_name])
+
+        if success:
+            self.console.print(f"[green]✓[/green] Created tag: {tag_name}")
+
+            # Ask if user wants to push the tag
+            if Confirm.ask("Push tag to remote?", default=True):
+                success, output = self.run_git_command(['git', 'push', 'origin', tag_name], retry_count=4)
+                if success:
+                    self.console.print(f"[green]✓[/green] Pushed tag to remote")
+                else:
+                    self.console.print(f"[red]✗[/red] Failed to push tag: {output}")
+        else:
+            self.console.print(f"[red]✗[/red] Failed to create tag: {output}")
+
+    def stash_management(self):
+        """Interactive stash management"""
+        self.console.print("\n[bold cyan]📦 Stash Management[/bold cyan]")
+
+        # List stashes
+        success, output = self.run_git_command(['git', 'stash', 'list'])
+        if success and output.strip():
+            self.console.print("\n[bold]Current Stashes:[/bold]")
+            for line in output.strip().split('\n'):
+                self.console.print(f"  {line}")
+
+            choice = Prompt.ask(
+                "\nWhat would you like to do?",
+                choices=["apply", "pop", "drop", "clear", "cancel"],
+                default="cancel"
+            )
+
+            if choice == "cancel":
+                return
+            elif choice == "clear":
+                if Confirm.ask("[bold red]Clear all stashes?[/bold red]", default=False):
+                    success, output = self.run_git_command(['git', 'stash', 'clear'])
+                    if success:
+                        self.console.print("[green]✓[/green] All stashes cleared")
+            elif choice in ["apply", "pop", "drop"]:
+                stash_ref = Prompt.ask("Enter stash reference (e.g., 0 for stash@{0})", default="0")
+                success, output = self.run_git_command(['git', 'stash', choice, f'stash@{{{stash_ref}}}'])
+                if success:
+                    self.console.print(f"[green]✓[/green] Stash {choice}d successfully")
+                else:
+                    self.console.print(f"[red]✗[/red] Failed: {output}")
+        else:
+            self.console.print("[yellow]No stashes found[/yellow]")
+
+            if Confirm.ask("Create a new stash?", default=False):
+                message = Prompt.ask("Stash message", default="WIP")
+                success, output = self.run_git_command(['git', 'stash', 'push', '-m', message])
+                if success:
+                    self.console.print("[green]✓[/green] Changes stashed successfully")
+                else:
+                    self.console.print(f"[red]✗[/red] Failed to stash: {output}")
 
     def suggest_commit_message(self, modified_files: List[str], new_files: List[str], deleted_files: List[str]) -> str:
         """Generate smart commit message based on changes"""
@@ -473,42 +629,177 @@ class GitBuddy:
         
         return sorted(changed_paths)
     
-    def show_file_diff(self, file_path: str):
-        """Show diff for a specific file"""
+    def show_file_diff(self, file_path: str, context_lines: int = 3):
+        """Show diff for a specific file with enhanced visualization"""
         self.console.print(f"\n[bold]Diff for {file_path}:[/bold]")
-        
+
         # Check if file is new (untracked)
         success, status_output = self.run_git_command(['git', 'status', '--porcelain', file_path])
         if success and status_output.startswith('??'):
-            self.console.print("[green]This is a new file (showing first 20 lines):[/green]")
+            self.console.print("[green]This is a new file (showing first 30 lines):[/green]")
             try:
                 with open(self.current_dir / file_path, 'r', encoding='utf-8') as f:
-                    lines = f.readlines()[:20]
+                    lines = f.readlines()[:30]
                     for i, line in enumerate(lines, 1):
                         self.console.print(f"[green]+{i:3d}[/green] {line.rstrip()}")
-                    if len(lines) == 20:
-                        self.console.print("[dim]... (truncated)[/dim]")
+                    if len(lines) == 30:
+                        self.console.print("[dim]... (truncated, use 'cat' to see full file)[/dim]")
             except Exception as e:
                 self.console.print(f"[red]Could not read file: {e}[/red]")
         else:
-            # Show actual diff for modified files
-            success, diff_output = self.run_git_command(['git', 'diff', 'HEAD', '--', file_path])
+            # Show actual diff with custom context for modified files
+            success, diff_output = self.run_git_command(
+                ['git', 'diff', f'-U{context_lines}', 'HEAD', '--', file_path]
+            )
             if success and diff_output.strip():
-                # Parse and colorize diff output
+                # Parse and colorize diff output with stats
                 lines = diff_output.split('\n')
+                additions, deletions = 0, 0
+
                 for line in lines:
                     if line.startswith('+++') or line.startswith('---'):
                         self.console.print(f"[bold]{line}[/bold]")
-                    elif line.startswith('+'):
+                    elif line.startswith('+') and not line.startswith('+++'):
                         self.console.print(f"[green]{line}[/green]")
-                    elif line.startswith('-'):
+                        additions += 1
+                    elif line.startswith('-') and not line.startswith('---'):
                         self.console.print(f"[red]{line}[/red]")
+                        deletions += 1
                     elif line.startswith('@@'):
                         self.console.print(f"[cyan]{line}[/cyan]")
                     else:
-                        self.console.print(line)
+                        self.console.print(f"[dim]{line}[/dim]")
+
+                # Show diff stats
+                self.console.print(f"\n[bold]Stats:[/bold] [green]+{additions}[/green] [red]-{deletions}[/red]")
             else:
                 self.console.print("[yellow]No differences found or file is staged[/yellow]")
+
+    def show_detailed_diff(self):
+        """Show detailed diff with statistics for all changes"""
+        self.console.print("\n[bold cyan]📋 Detailed Change Summary[/bold cyan]")
+
+        # Get overall diff stats
+        success, output = self.run_git_command(['git', 'diff', '--stat', 'HEAD'])
+        if success and output.strip():
+            self.console.print(output)
+
+            if Confirm.ask("\n[bold]Show full diff?[/bold]", default=False):
+                success, full_diff = self.run_git_command(['git', 'diff', 'HEAD'])
+                if success:
+                    # Paginate output if too large
+                    lines = full_diff.split('\n')
+                    if len(lines) > 50:
+                        self.console.print(f"[yellow]Diff is {len(lines)} lines long[/yellow]")
+                        if Confirm.ask("Show anyway?", default=False):
+                            for line in lines[:200]:  # Show max 200 lines
+                                if line.startswith('+') and not line.startswith('+++'):
+                                    self.console.print(f"[green]{line}[/green]")
+                                elif line.startswith('-') and not line.startswith('---'):
+                                    self.console.print(f"[red]{line}[/red]")
+                                elif line.startswith('@@'):
+                                    self.console.print(f"[cyan]{line}[/cyan]")
+                                else:
+                                    self.console.print(line)
+                            if len(lines) > 200:
+                                self.console.print(f"[dim]... ({len(lines) - 200} more lines)[/dim]")
+                    else:
+                        for line in lines:
+                            if line.startswith('+') and not line.startswith('+++'):
+                                self.console.print(f"[green]{line}[/green]")
+                            elif line.startswith('-') and not line.startswith('---'):
+                                self.console.print(f"[red]{line}[/red]")
+                            elif line.startswith('@@'):
+                                self.console.print(f"[cyan]{line}[/cyan]")
+                            else:
+                                self.console.print(line)
+        else:
+            self.console.print("[yellow]No changes to show[/yellow]")
+
+    def quick_commit_push(self, message: str = None):
+        """Quick commit and push workflow for power users"""
+        self.console.print("\n[bold cyan]⚡ Quick Commit & Push[/bold cyan]")
+
+        # Check for changes
+        modified_files, new_files, deleted_files = self.get_git_status()
+
+        if not any([modified_files, new_files, deleted_files]):
+            self.console.print("[yellow]No changes to commit[/yellow]")
+            return
+
+        # Show brief summary
+        total = len(modified_files) + len(new_files) + len(deleted_files)
+        self.console.print(f"\n[bold]Changes:[/bold] {len(new_files)} new, {len(modified_files)} modified, {len(deleted_files)} deleted ({total} total)")
+
+        # Generate or use provided message
+        if not message:
+            message = self.suggest_commit_message(modified_files, new_files, deleted_files)
+            message = Prompt.ask("Commit message", default=message)
+
+        # Quick commit
+        success, output = self.run_git_command(['git', 'add', '.'])
+        if not success:
+            self.console.print(f"[red]Failed to stage files: {output}[/red]")
+            return
+
+        success, output = self.run_git_command(['git', 'commit', '-m', message])
+        if not success:
+            self.console.print(f"[red]Failed to commit: {output}[/red]")
+            return
+
+        self.console.print(f"[green]✓[/green] Committed: {message}")
+
+        # Quick push
+        branch = self.get_current_branch()
+        if Confirm.ask(f"Push to {branch}?", default=True):
+            success, output = self.run_git_command(['git', 'push', '-u', 'origin', branch], retry_count=4)
+            if success:
+                self.console.print("[green]✓[/green] Successfully pushed!")
+            else:
+                self.console.print(f"[red]✗[/red] Push failed: {output}")
+
+    def cleanup_repository(self):
+        """Repository cleanup utilities"""
+        self.console.print("\n[bold cyan]🧹 Repository Cleanup[/bold cyan]")
+
+        cleanup_options = [
+            ("Prune remote branches", "git remote prune origin"),
+            ("Clean untracked files (dry-run)", "git clean -n"),
+            ("Clean untracked files (execute)", "git clean -f"),
+            ("Garbage collection", "git gc"),
+            ("Optimize repository", "git gc --aggressive --prune=now"),
+            ("Cancel", None)
+        ]
+
+        self.console.print("\n[bold]Available cleanup operations:[/bold]")
+        for i, (desc, _) in enumerate(cleanup_options, 1):
+            self.console.print(f"  {i}. {desc}")
+
+        choice = Prompt.ask("Select operation", default="6")
+
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(cleanup_options):
+                desc, command = cleanup_options[idx]
+
+                if command is None:
+                    return
+
+                if "execute" in desc or "aggressive" in desc:
+                    if not Confirm.ask(f"[bold yellow]Are you sure you want to: {desc}?[/bold yellow]", default=False):
+                        return
+
+                self.console.print(f"[yellow]Executing: {desc}...[/yellow]")
+                success, output = self.run_git_command(command.split())
+
+                if success:
+                    self.console.print(f"[green]✓[/green] {desc} completed")
+                    if output.strip():
+                        self.console.print(output)
+                else:
+                    self.console.print(f"[red]✗[/red] Failed: {output}")
+        except (ValueError, IndexError):
+            self.console.print("[red]Invalid selection[/red]")
 
     def display_git_status(self):
         """Display current git status with colors"""
@@ -1016,15 +1307,51 @@ class GitBuddy:
                     for i, repo in enumerate(self.config["recent_repos"][:5], 1):
                         self.console.print(f"  {i}. {repo}")
 
-                # Get repository URL
-                repo_url = Prompt.ask("\n[bold]Enter GitHub repository URL (number for recent, 'help', or 'quit')[/bold]")
+                # Get repository URL or command
+                repo_url = Prompt.ask("\n[bold]Enter GitHub repository URL or command (type 'help' for options)[/bold]")
 
+                # Handle special commands
                 if repo_url.lower() in ['quit', 'q', 'exit']:
                     self.console.print("👋 Goodbye!")
                     break
 
                 if repo_url.lower() in ['help', '?']:
                     self.display_help()
+                    continue
+
+                if repo_url.lower() == 'config':
+                    self.manage_config()
+                    continue
+
+                if repo_url.lower() == 'stats':
+                    stats = self.get_repository_stats()
+                    if stats.get('total_commits', 0) > 0:
+                        self.console.print("\n[bold cyan]📊 Repository Statistics[/bold cyan]")
+                        self.console.print(f"Total commits: {stats['total_commits']}")
+                        self.console.print(f"Branches: {stats['branches']}")
+                        self.console.print(f"Contributors: {stats['contributors']}")
+                    else:
+                        self.console.print("[yellow]No repository statistics available (not a git repo or no commits)[/yellow]")
+                    continue
+
+                if repo_url.lower() == 'history':
+                    self.view_commit_history()
+                    continue
+
+                if repo_url.lower() == 'stash':
+                    self.stash_management()
+                    continue
+
+                if repo_url.lower() == 'diff':
+                    self.show_detailed_diff()
+                    continue
+
+                if repo_url.lower() == 'quick':
+                    self.quick_commit_push()
+                    continue
+
+                if repo_url.lower() == 'cleanup':
+                    self.cleanup_repository()
                     continue
 
                 # Check if user selected a recent repo
